@@ -41,15 +41,22 @@ const alertSchema = z.object({
 });
 
 function normalizeQuote(rawQuote) {
+  const price = rawQuote.regularMarketPrice ?? null;
+  const previousClose =
+    rawQuote.chartPreviousClose ?? rawQuote.regularMarketPreviousClose ?? null;
+  const change = price != null && previousClose != null ? price - previousClose : null;
+  const changePercent =
+    change != null && previousClose ? (change / previousClose) * 100 : null;
+
   return {
     symbol: rawQuote.symbol,
     name: rawQuote.shortName || rawQuote.longName || rawQuote.symbol,
-    price: rawQuote.regularMarketPrice ?? null,
-    change: rawQuote.regularMarketChange ?? null,
-    changePercent: rawQuote.regularMarketChangePercent ?? null,
+    price,
+    change: rawQuote.regularMarketChange ?? change,
+    changePercent: rawQuote.regularMarketChangePercent ?? changePercent,
     currency: rawQuote.currency || "USD",
-    marketState: rawQuote.marketState || "unknown",
-    previousClose: rawQuote.regularMarketPreviousClose ?? null,
+    marketState: rawQuote.marketState || rawQuote.exchangeName || "unknown",
+    previousClose,
     dayHigh: rawQuote.regularMarketDayHigh ?? null,
     dayLow: rawQuote.regularMarketDayLow ?? null,
     updatedAt:
@@ -75,17 +82,30 @@ async function fetchJson(url) {
 }
 
 async function getQuotes(symbols) {
-  const params = new URLSearchParams({
-    formatted: "false",
-    symbols: symbols.join(","),
-    fields:
-      "symbol,shortName,longName,regularMarketPrice,regularMarketChange,regularMarketChangePercent,currency,marketState,regularMarketPreviousClose,regularMarketDayHigh,regularMarketDayLow,regularMarketTime",
-  });
-  const data = await fetchJson(
-    `https://${YAHOO_HOST}/v7/finance/quote?${params.toString()}`
+  const quoteResults = await Promise.allSettled(
+    symbols.map(async (symbol) => {
+      const params = new URLSearchParams({
+        interval: "1d",
+        range: "5d",
+      });
+      const data = await fetchJson(
+        `https://${YAHOO_HOST}/v8/finance/chart/${encodeURIComponent(
+          symbol
+        )}?${params.toString()}`
+      );
+      const meta = data.chart?.result?.[0]?.meta;
+
+      if (!meta) {
+        throw new Error(`No quote data found for ${symbol}`);
+      }
+
+      return normalizeQuote(meta);
+    })
   );
 
-  return (data.quoteResponse?.result || []).map(normalizeQuote);
+  return quoteResults
+    .filter((result) => result.status === "fulfilled")
+    .map((result) => result.value);
 }
 
 async function getNews(symbol) {
